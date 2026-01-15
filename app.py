@@ -3,153 +3,120 @@ import requests
 from bs4 import BeautifulSoup
 from groq import Groq
 from duckduckgo_search import DDGS
-import time
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="崩壞：星穹鐵道 (Ver 3.8 資料庫搭載)", layout="wide", page_icon="🎻")
+st.set_page_config(page_title="崩壞：星穹鐵道 - 雙星之命", layout="wide", page_icon="🥀")
 
 # ==========================================
-# 核心資料庫 (源自你上傳的 Get_SR_Data.py)
+# 核心資料庫：雙胞胎載體設定 (輝夜 & 主角)
 # ==========================================
-WORLD_DATA = """
-【已知角色清單 (Ver 3.8)】:
-- 星穹列車: 星, 穹, 姬子, 瓦爾特, 丹恆, 三月七, 帕姆
-- 星核獵手: 卡芙卡, 流螢, 刃, 銀狼, 薩姆, 艾利歐
-- 黑塔太空站: 黑塔, 阮•梅, 艾絲妲, 螺絲咕姆, 真理醫生
-- 翁法羅斯 & 泰坦諸神: 阿格萊雅, 大麗花, 緹霓, 萬敵, 遐蝶, 那刻夏, 風蘆, 賽飛兒, 白厄, 海瑟音, 刻律德拉, 長夜月, 丹恆•騰荒, 昔連, 亂破
-- FATE連動: Archer, Saber, Lancer, 遠坂凜, 衛宮士郎
-- 泰坦十二神: 雅努斯, 塔蘭頓, 歐洛尼斯...等
-
-【時間軸與劇情進度】:
-目前包含至 3.8 版本「記憶是夢的開場白」以及 FATE 連動「美夢與聖杯」。
+TWIN_SETTING = """
+【核心設定：雙星核載體】
+- 輝夜與主角（星/穹）是命運共同體，被視為「雙胞胎」般的載體。
+- 序章：卡芙卡同時將星核放入輝夜與主角體內。
+- 輝夜人設：170cm/50kg/36B、白長髮漸變紅、紅瞳、白毛衣、黑包臀裙、黑高跟鞋、血控能力、變形能力、蝙蝠刺青。
+- 演出要求：嚴格同步 Wiki 與 YouTube 影片劇情，卡芙卡對「你們」說話。
 """
 
 # --- 側邊欄 ---
 with st.sidebar:
-    st.title("⚙️ 系統終端")
+    st.title("⚙️ 劇本同步終端")
     api_key = st.text_input("輸入 Groq API Key", type="password")
-    st.caption("輸入 Key 後，點擊下方按鈕開始序章")
+    st.info("**模式：** 雙胞胎同步還原")
     
-    # 啟動按鈕
-    if st.button("🚀 啟動/重置劇情 (Start Game)"):
+    if st.button("🚀 啟動/重置劇情"):
         st.session_state.messages = [] 
         st.session_state.started = True 
         st.rerun()
+    
+    st.markdown("---")
+    # --- 新增：不用說話也能繼續劇情的按鍵 ---
+    if st.session_state.get("started", False):
+        if st.button("⏭️ 繼續劇情 (Next Segment)"):
+            st.session_state.auto_continue = True
+        else:
+            st.session_state.auto_continue = False
 
-# --- 核心：Wiki 爬蟲 ---
-def search_wiki(query):
+# --- Wiki 子網頁爬蟲 ---
+def search_wiki_content(mission_name):
+    search_query = f"site:wiki.biligame.com/sr {mission_name} 劇情對話"
     try:
-        results = DDGS().text(f"{query} site:wiki.biligame.com/sr OR site:zh.moegirl.org.cn", max_results=2)
+        results = DDGS().text(search_query, max_results=3)
         context = ""
-        if results:
-            for res in results:
-                try:
-                    resp = requests.get(res['href'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=2)
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    text = soup.find('div', {'class': 'mw-parser-output'}).get_text()[:500]
-                    context += f"\n[資料來源:{res['title']}]\n{text}\n"
-                except: continue
+        for res in results:
+            try:
+                resp = requests.get(res['href'], timeout=3)
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                context += soup.get_text()[:600] + "\n"
+            except: continue
         return context
     except: return ""
 
 # --- 核心：系統提示詞 ---
 system_prompt = f"""
-你是一個嚴格遵守「崩壞：星穹鐵道」原作劇情的 RPG 運算核心。
-你必須執行以下指令：
+你現在是「崩壞：星穹鐵道」劇情演繹核心。
+【絕對指令】：
+1. **雙胞胎同步**：主角與輝夜(玩家)同時經歷序章。
+2. **還原度100%**：嚴格遵守 Wiki 劇本。當前任務：「昨夜的第82次敲門」。
+3. **視角**：以輝夜與主角為中心，細膩描寫兩人的甦醒與互動。
 
-1. **全知觀點**：你負責描寫場景、旁白、以及所有 NPC (卡夫卡、銀狼、虛卒等)。
-2. **原作還原**：開場必須完全還原遊戲序章：黑塔太空站遭到反物質軍團入侵，混亂的警報聲中，卡夫卡優雅地拉著隱形的小提琴（背景音樂是 Pachelbel 的卡農），直到銀狼出現。
-3. **資料引用**：參考以下核心資料庫進行設定：
-{WORLD_DATA}
+【輝夜資料庫】：{TWIN_SETTING}
 
-4. **輸出格式**：
-   (深度運算): [分析目前的劇情點，決定下一幕的運鏡與音樂]
-   **[角色名]**: "對話內容"
-   *動作與場景描寫 (請著重於光影、聲音、與角色的優雅感)*
-
-5. **語言**：繁體中文 (Traditional Chinese)。
+【輸出格式】：
+(深度運算): [分析下一段 Wiki 劇本節奏]
+**[角色名]**: "對話"
+*動作/心理/場景描寫*
 """
 
 # --- 初始化 ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "started" not in st.session_state:
-    st.session_state.started = False
+if "messages" not in st.session_state: st.session_state.messages = []
+if "started" not in st.session_state: st.session_state.started = False
+if "auto_continue" not in st.session_state: st.session_state.auto_continue = False
 
-# --- 介面 UI ---
-st.title("🚂 崩壞：星穹鐵道 (Ver 3.8 資料庫搭載)")
+st.title("🚂 星穹演繹：雙星軌跡 (自動劇情版)")
 
+# 顯示歷史
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-# --- 自動開場邏輯 ---
+# --- 處理 AI 生成的通用函數 ---
+def generate_ai_response(instruction):
+    client = Groq(api_key=api_key)
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        full_res = ""
+        wiki_info = search_wiki_content("昨夜的第82次敲門 劇情")
+        msgs = [{"role": "system", "content": f"{system_prompt}\nWiki資料：{wiki_info}"}] + \
+               st.session_state.messages + [{"role": "user", "content": instruction}]
+        
+        stream = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=msgs,
+            stream=True
+        )
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                full_res += chunk.choices[0].delta.content
+                placeholder.markdown(full_res + "▌")
+        placeholder.markdown(full_res)
+        st.session_state.messages.append({"role": "assistant", "content": full_res})
+
+# --- 自動序章啟動 ---
 if st.session_state.started and len(st.session_state.messages) == 0:
-    if not api_key:
-        st.warning("請先在左側輸入 API Key！")
+    if api_key:
+        generate_ai_response("【劇本開始】：請詳細演出卡芙卡將星核放入主角與輝夜(白毛衣紅裙)體內，並對兩人說出『聽我說』後，兩人同時睜開眼的場景。請嚴格遵守 Wiki 對話。")
     else:
-        start_instruction = """
-        【系統指令】：立刻開始遊戲序章。
-        場景：黑塔太空站「收容艙段」。
-        現狀：反物質軍團入侵，爆炸聲四起。
-        鏡頭：卡夫卡(Kafka)站在混亂的中心，閉著眼，像是在演奏一首不存在的小提琴曲（卡農變奏）。
-        請詳細描寫這個開場，直到銀狼(Silver Wolf)出現打斷她。
-        """
-        
-        client = Groq(api_key=api_key)
-        
-        with st.chat_message("assistant"):
-            with st.status("🎻 正在載入序章資源... (卡農 D大調)", expanded=True):
-                st.write("讀取 3.8 資料庫...")
-                st.write("更換模型：Llama-3.3-70b (Latest)...")
-                st.write("生成角色：卡夫卡...")
-            
-            placeholder = st.empty()
-            full_res = ""
-            
-            # --- 關鍵修改：使用最新的 Llama 3.3 模型 ---
-            try:
-                stream = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",  # <--- 這裡改了！換成最新版
-                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": start_instruction}],
-                    stream=True
-                )
-                for chunk in stream:
-                    if chunk.choices[0].delta.content:
-                        full_res += chunk.choices[0].delta.content
-                        placeholder.markdown(full_res + "▌")
-                placeholder.markdown(full_res)
-                st.session_state.messages.append({"role": "assistant", "content": full_res})
-            except Exception as e:
-                st.error(f"連線錯誤: {e}")
+        st.warning("請輸入 API Key")
 
-# --- 玩家輸入 ---
+# --- 處理「繼續劇情」按鈕 ---
+if st.session_state.auto_continue:
+    generate_ai_response("【系統指令】：請不要等待玩家操作，直接根據原版劇情影片與 Wiki 文本，繼續推演下一段對話與行動。")
+    st.session_state.auto_continue = False # 重置狀態
+    st.rerun()
+
+# --- 玩家輸入 (如果想說話時使用) ---
 if len(st.session_state.messages) > 0:
-    if prompt := st.chat_input("輸入你的行動... (例如：我看著銀狼，問她星核在哪裡)"):
+    if prompt := st.chat_input("輸入輝夜的行動，或點擊左側『繼續劇情』..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        wiki_info = search_wiki(prompt)
-        
-        client = Groq(api_key=api_key)
-        msgs = [{"role": "system", "content": f"{system_prompt}\n\n【Wiki即時資料】:\n{wiki_info}"}] + st.session_state.messages
-        
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            full_res = ""
-            try:
-                # --- 關鍵修改：使用最新的 Llama 3.3 模型 ---
-                stream = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile", # <--- 這裡也改了！
-                    messages=msgs,
-                    stream=True
-                )
-                for chunk in stream:
-                    if chunk.choices[0].delta.content:
-                        full_res += chunk.choices[0].delta.content
-                        placeholder.markdown(full_res + "▌")
-                placeholder.markdown(full_res)
-                st.session_state.messages.append({"role": "assistant", "content": full_res})
-            except Exception as e:
-                st.error(f"連線錯誤: {e}")
+        with st.chat_message("user"): st.markdown(prompt)
+        generate_ai_response(prompt)
