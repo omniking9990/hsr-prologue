@@ -1,5 +1,5 @@
 streamlit
 groq
-beautifulsoup4
-requests
 duckduckgo-search
+requests
+beautifulsoup4
