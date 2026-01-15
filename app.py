@@ -1,4 +1,4 @@
-import requests
+iimport requests
 from bs4 import BeautifulSoup
 import time
 from urllib.parse import quote, urljoin
