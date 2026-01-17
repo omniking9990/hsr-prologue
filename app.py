@@ -1,88 +1,124 @@
-iimport requests
-from bs4 import BeautifulSoup
-import time
-from urllib.parse import quote, urljoin
+import streamlit as st
+from groq import Groq
+import os
 
-# ==========================================
-# 1. 修正後的精確任務清單 (對應 Wiki 子網頁標題)
-# ==========================================
-MISSION_LIST = [
-    # --- 序章：收容艙段 ---
-    "昨夜的第82次敲门", "混乱的一角", "在那琥珀色的光芒中", 
-    
-    # --- 第一章：雅利洛-VI ---
-    "今天是昨天的明天", "劫后新生", "于枯索的冬夜里", "于曈昽的骄阳下", "炉前百态", "苏醒年代",
-    
-    # --- 第二章：仙舟「羅浮」 ---
-    "乘槎驭风仙窟游", "云树百丈蔽重楼", "劫波渡尽战云收",
-    
-    # --- 第三章：匹諾康尼 ---
-    "喧哗与骚动", "鸽群中的猫", "在我们的时代里", "再见，匹诺康尼"
-]
+# --- 頁面初始設定 ---
+st.set_page_config(page_title="星穹鐵道-雙星之命 (Wiki 全同步終端)", layout="wide", page_icon="🥀")
 
-BILI_BASE = "https://wiki.biligame.com/sr/"
-OUTPUT_FILE = "SR_Exact_Script.txt"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+# --- 1. 讀取爬好的劇本庫 ---
+def load_full_script():
+    if os.path.exists("HSR_Full_Story_Wiki.txt"):
+        with open("HSR_Full_Story_Wiki.txt", "r", encoding="utf-8") as f:
+            content = f.read()
+        # 根據標題切割劇本，建立索引
+        sections = content.split("【頁面標題】:")
+        mission_map = {}
+        for sec in sections:
+            if "【來源連結】" in sec:
+                title = sec.split("\n")[0].strip()
+                mission_map[title] = sec
+        return mission_map
+    else:
+        st.error("找不到 HSR_Full_Story_Wiki.txt！請確保檔案已上傳至 GitHub 資料夾。")
+        return {}
 
-def get_dialogue_text(soup):
+# --- 初始化 Session ---
+if "mission_db" not in st.session_state:
+    st.session_state.mission_db = load_full_script()
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "current_mission" not in st.session_state:
+    st.session_state.current_mission = "今天是昨天的明天" # 預設起點
+
+# --- 側邊欄 ---
+with st.sidebar:
+    st.title("🚂 劇情控制器")
+    api_key = st.text_input("輸入 Groq API Key", type="password")
+    
+    st.markdown("---")
+    # 功能 2：輸入人設
+    st.subheader("👤 人設設定")
+    player_bio = st.text_area("輸入輝夜的人設：", value="輝夜：170cm/50kg/36B、白長髮漸變紅、紅瞳、白毛衣、黑包臀裙、黑高跟鞋、蝙蝠刺青。與主角是雙胞胎。")
+    
+    st.markdown("---")
+    st.subheader("📍 任務導航")
+    mission_list = list(st.session_state.mission_db.keys())
+    if mission_list:
+        selected_mission = st.selectbox("選擇當前所在任務：", mission_list, index=mission_list.index(st.session_state.current_mission) if st.session_state.current_mission in mission_list else 0)
+        if selected_mission != st.session_state.current_mission:
+            st.session_state.current_mission = selected_mission
+            st.session_state.messages = [] # 切換任務重置對話
+    
+    st.markdown("---")
+    # 功能 1：繼續劇情按鈕
+    if st.button("⏭️ 繼續劇情 (自動演繹下段)"):
+        st.session_state.trigger_auto = True
+    else:
+        st.session_state.trigger_auto = False
+
+# --- 核心 AI 生成邏輯 ---
+def run_ai(user_action=None):
+    if not api_key:
+        st.error("請提供 API Key")
+        return
+
+    client = Groq(api_key=api_key)
+    
+    # 獲取當前任務劇本
+    raw_script = st.session_state.mission_db.get(st.session_state.current_mission, "劇本載入中...")
+    
+    system_prompt = f"""
+    你現在是《崩壞：星穹鐵道》官方劇本執行引擎。
+    
+    【當前任務劇本】：
+    {raw_script[:8000]} # 限制長度確保穩定
+    
+    【玩家人設】：
+    {player_bio}
+    
+    【遊戲規則】：
+    1. 你的輸出必須「完全遵循」劇本內的對話與事件發展。
+    2. 主角變更：劇本中所有針對主角的對話，請自動改為對「主角與輝夜(雙胞胎)」兩人說話。
+    3. 演出細節：請在台詞之間，詳細描寫輝夜的動作（如：白毛衣的晃動、紅瞳的冷漠注視）。
+    4. 禁止編造：若劇本未提及後續，請等待玩家輸入。
     """
-    專門抓取 Wiki 頁面中的劇情對話區塊
-    """
-    script_content = []
-    # BiliWiki 的對話通常在 class 為 'mw-parser-output' 的 div 下的特定結構中
-    content = soup.find('div', class_='mw-parser-output')
-    if not content:
-        return ""
 
-    # 尋找對話表格或帶有角色頭像的區塊
-    # 通常對話會出現在 table 或特定段落
-    for element in content.find_all(['p', 'table', 'div']):
-        # 排除導航欄和目錄
-        if element.get('class') and any(c in element.get('class') for c in ['navbox', 'toc', 'infobox']):
-            continue
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        full_response = ""
         
-        text = element.get_text(strip=True)
-        if text and len(text) > 2:
-            # 簡單過濾掉一些系統提示
-            if "編輯" in text or "跳轉" in text: continue
-            script_content.append(text)
-    
-    return "\n".join(script_content)
+        # 構造消息
+        query = user_action if user_action else "請根據劇本內容，演出下一段情節。若有對話請直接開始。"
+        msgs = [{"role": "system", "content": system_prompt}] + st.session_state.messages + [{"role": "user", "content": query}]
+        
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=msgs,
+            stream=True
+        )
+        for chunk in completion:
+            if chunk.choices[0].delta.content:
+                full_response += chunk.choices[0].delta.content
+                placeholder.markdown(full_response + "▌")
+        placeholder.markdown(full_response)
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
 
-def main():
-    print(f"=== 啟動 Wiki 劇情深度擷取 (對標開拓任務子網頁) ===")
-    
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        # 寫入玩家人設作為 AI 參考基準
-        f.write("====== 【玩家人設：輝夜】 ======\n")
-        f.write("形象：170cm/50kg/36B、白長髮漸變紅、紅瞳、白毛衣、黑包臀裙、黑高跟鞋、蝙蝠刺青。\n")
-        f.write("能力：血液控制、變形、雙生星核載體。\n\n")
+# --- 主畫面渲染 ---
+st.title(f"📖 雙星之軌：{st.session_state.current_mission}")
 
-        for mission in MISSION_LIST:
-            url = f"{BILI_BASE}{quote(mission)}"
-            print(f"正在抓取任務: {mission} ...")
-            
-            try:
-                resp = requests.get(url, headers=HEADERS, timeout=10)
-                resp.encoding = 'utf-8'
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    script = get_dialogue_text(soup)
-                    
-                    f.write(f"\n\n====== [開拓任務] {mission} ======\n")
-                    f.write(f"【來源網址】: {url}\n")
-                    f.write(script)
-                    print(f"   [成功] 已儲存 {len(script)} 字劇情。")
-                else:
-                    print(f"   [失敗] 網頁無法訪問: {resp.status_code}")
-            except Exception as e:
-                print(f"   [錯誤] {e}")
-            
-            time.sleep(1) # 避免對 Wiki 造成負擔
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-    print(f"\n全部完成！已生成檔案: {OUTPUT_FILE}")
+# 初始或觸發邏輯
+if len(st.session_state.messages) == 0:
+    run_ai()
 
-if __name__ == "__main__":
-    main()
+if st.session_state.get("trigger_auto", False):
+    run_ai()
+
+if prompt := st.chat_input("輝夜的行動 (例如：冷冷地看著卡芙卡)..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    run_ai(prompt)
